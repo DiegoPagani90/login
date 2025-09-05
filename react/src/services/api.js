@@ -160,6 +160,52 @@ class ApiService {
     }
   }
 
+  // 2FA setup session (token-based) methods
+  async startTwoFactorSetup() {
+    console.log('[TwoFactorService] Starting 2FA setup session');
+    try {
+      const response = await this.api.post('/two-factor/setup/start');
+      // Do NOT log sensitive payloads
+      return response.data; // { token, expires_at }
+    } catch (error) {
+      console.error('[TwoFactorService] Failed to start setup session:', error.response?.data?.message);
+      throw error;
+    }
+  }
+
+  async getTwoFactorSetupQrByToken(token) {
+    console.log('[TwoFactorService] Fetching 2FA QR by token');
+    try {
+      const response = await this.api.get('/two-factor/setup/qr', { params: { token } });
+      return response.data; // { qr_code_url, expires_at }
+    } catch (error) {
+      console.error('[TwoFactorService] Failed to fetch setup QR:', error.response?.data?.message);
+      throw error;
+    }
+  }
+
+  async getTwoFactorSetupStatus(token) {
+    // minimal logging (status polling)
+    try {
+      const response = await this.api.get('/two-factor/setup/status', { params: { token } });
+      return response.data; // { status, expires_at }
+    } catch (error) {
+      console.error('[TwoFactorService] Failed to poll setup status:', error.response?.data?.message);
+      throw error;
+    }
+  }
+
+  async confirmTwoFactorWithToken(token, code) {
+    console.log('[TwoFactorService] Confirming 2FA with token');
+    try {
+      const response = await this.api.post('/two-factor/setup/confirm', { token, code });
+      return response.data; // { message }
+    } catch (error) {
+      console.error('[TwoFactorService] Failed to confirm 2FA (token):', error.response?.data?.message);
+      throw error;
+    }
+  }
+
   // Utility methods
   setAuthToken(token) {
     localStorage.setItem('auth_token', token);

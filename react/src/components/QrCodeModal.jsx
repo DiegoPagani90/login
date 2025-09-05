@@ -1,29 +1,106 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import apiService from '../services/api';
 import './QrCodeModal.css';
 
 const QrCodeModal = ({ onComplete, onCancel }) => {
-  const [qrCodeData, setQrCodeData] = useState(null);
+  const [qrUrl, setQrUrl] = useState(null);
+  const [token, setToken] = useState(null);
+  const [expiresAt, setExpiresAt] = useState(null);
+  const [countdown, setCountdown] = useState(0);
   const [verificationCode, setVerificationCode] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showVerification, setShowVerification] = useState(false);
+  const pollRef = useRef(null);
+  const timerRef = useRef(null);
+  const lastHiddenAtRef = useRef(null);
 
   useEffect(() => {
-    enableTwoFactorAndShowQR();
+    startSetupAndLoadQR();
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
-  const enableTwoFactorAndShowQR = async () => {
-    console.log('[QrCodeModal] Enabling 2FA and generating QR code');
+  // Heuristic: if user switches away (to Authenticator) and comes back within 20s, auto-show verification
+  useEffect(() => {
+    if (!qrUrl || showVerification) return;
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        lastHiddenAtRef.current = Date.now();
+      } else if (document.visibilityState === 'visible') {
+        if (lastHiddenAtRef.current && Date.now() - lastHiddenAtRef.current < 20000) {
+          proceedToVerification();
+        }
+        lastHiddenAtRef.current = null;
+      }
+    };
+
+    const onBlur = () => {
+      lastHiddenAtRef.current = Date.now();
+    };
+
+    const onFocus = () => {
+      if (lastHiddenAtRef.current && Date.now() - lastHiddenAtRef.current < 20000) {
+        proceedToVerification();
+      }
+      lastHiddenAtRef.current = null;
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [qrUrl, showVerification]);
+
+  const startSetupAndLoadQR = async () => {
+    console.log('[QrCodeModal] Starting 2FA setup session and loading QR');
     setIsLoading(true);
     setError('');
-    
     try {
-      const response = await apiService.enableTwoFactor();
-      console.log('[QrCodeModal] 2FA enabled, QR code received');
-      setQrCodeData(response);
+      // Start token-based setup session (TTL ~5 min)
+      const start = await apiService.startTwoFactorSetup();
+      setToken(start.token);
+      setExpiresAt(start.expires_at);
+
+      // Initialize countdown timer
+      timerRef.current = setInterval(() => {
+        const diff = Math.max(0, Math.floor((new Date(start.expires_at).getTime() - Date.now()) / 1000));
+        setCountdown(diff);
+        if (diff <= 0 && timerRef.current) {
+          clearInterval(timerRef.current);
+        }
+      }, 1000);
+
+      // Fetch QR by token
+      const qr = await apiService.getTwoFactorSetupQrByToken(start.token);
+      setQrUrl(qr.qr_code_url);
+
+      // Poll status every 3s to react on expiry/confirm (defensive UX)
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await apiService.getTwoFactorSetupStatus(start.token);
+          if (status.status !== 'pending') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            if (status.status === 'expired') {
+              setError('QR code expired. Please restart the setup.');
+              setQrUrl(null);
+            }
+          }
+        } catch (e) {
+          // ignore polling errors
+        }
+      }, 3000);
     } catch (err) {
-      console.error('[QrCodeModal] Failed to enable 2FA:', err);
+      console.error('[QrCodeModal] Failed to start setup or load QR:', err);
       setError('Failed to generate QR code. Please try again.');
     } finally {
       setIsLoading(false);
@@ -38,7 +115,8 @@ const QrCodeModal = ({ onComplete, onCancel }) => {
     setIsLoading(true);
 
     try {
-      await apiService.confirmTwoFactor(verificationCode);
+      if (!token) throw new Error('Missing setup token');
+      await apiService.confirmTwoFactorWithToken(token, verificationCode);
       console.log('[QrCodeModal] 2FA setup confirmed successfully');
       onComplete();
     } catch (err) {
@@ -57,7 +135,8 @@ const QrCodeModal = ({ onComplete, onCancel }) => {
 
   const handleCancel = async () => {
     console.log('[QrCodeModal] Setup cancelled, disabling 2FA');
-    
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
     try {
       await apiService.disableTwoFactor();
       console.log('[QrCodeModal] 2FA disabled successfully');
@@ -69,7 +148,7 @@ const QrCodeModal = ({ onComplete, onCancel }) => {
   };
 
   const proceedToVerification = () => {
-    console.log('[QrCodeModal] User proceeding to verification step');
+    console.log('[QrCodeModal] Proceeding to verification (hide QR)');
     setShowVerification(true);
   };
 
@@ -96,25 +175,19 @@ const QrCodeModal = ({ onComplete, onCancel }) => {
                   <div className="qr-loading-spinner"></div>
                   <p>Generating QR code...</p>
                 </div>
-              ) : qrCodeData ? (
+              ) : qrUrl ? (
                 <div className="qr-code-container">
                   <div className="qr-code-wrapper">
                     <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrCodeData.qr_code_url)}`}
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}`}
                       alt="2FA QR Code" 
                       className="qr-code-image" 
+                      onClick={proceedToVerification}
                       onError={(e) => {
                         console.error('[QrCodeModal] QR code image failed to load, using fallback');
-                        e.target.src = `https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=${encodeURIComponent(qrCodeData.qr_code_url)}`;
+                        e.target.src = `https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=${encodeURIComponent(qrUrl)}`;
                       }}
                     />
-                  </div>
-                  
-                  <div className="qr-manual-entry">
-                    <p className="qr-manual-label">Can't scan? Enter this code manually:</p>
-                    <div className="qr-secret-code">
-                      {qrCodeData.secret}
-                    </div>
                   </div>
 
                   <div className="qr-steps">
@@ -128,26 +201,32 @@ const QrCodeModal = ({ onComplete, onCancel }) => {
                     </div>
                     <div className="qr-step">
                       <span className="qr-step-number">3</span>
-                      <span>Click "Next" to verify the setup</span>
+                      <span>Click the QR or "I scanned it" to verify</span>
                     </div>
                   </div>
+
+                  {expiresAt && (
+                    <div className="qr-expiry">
+                      Expires in: {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="qr-error-container">
                   <p className="qr-error-text">{error || 'Failed to generate QR code'}</p>
-                  <button onClick={enableTwoFactorAndShowQR} className="qr-retry-button">
+                  <button onClick={startSetupAndLoadQR} className="qr-retry-button">
                     Try Again
                   </button>
                 </div>
               )}
 
-              {qrCodeData && (
+              {qrUrl && (
                 <div className="qr-modal-actions">
                   <button onClick={handleCancel} className="qr-cancel-button">
                     Cancel
                   </button>
                   <button onClick={proceedToVerification} className="qr-next-button">
-                    Next - Verify Setup
+                    I scanned it - Verify now
                   </button>
                 </div>
               )}
@@ -171,6 +250,7 @@ const QrCodeModal = ({ onComplete, onCancel }) => {
                     className="qr-code-input"
                     autoComplete="one-time-code"
                     autoFocus
+                    onFocus={() => setShowVerification(true)}
                   />
                 </div>
 

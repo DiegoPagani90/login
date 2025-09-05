@@ -21,4 +21,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/two-factor/confirm', [TwoFactorAuthController::class, 'confirm']);
     Route::get('/two-factor/qr-code', [TwoFactorAuthController::class, 'showQrCode']);
     Route::post('/two-factor/recovery-codes', [TwoFactorAuthController::class, 'generateRecoveryCodes']);
+
+    // Two Factor setup session routes
+    Route::post('/two-factor/setup/start', [TwoFactorAuthController::class, 'startSetup']);
+    Route::get('/two-factor/setup/qr', [TwoFactorAuthController::class, 'qrByToken']);
+    Route::get('/two-factor/setup/status', [TwoFactorAuthController::class, 'sessionStatus']);
+    Route::post('/two-factor/setup/confirm', [TwoFactorAuthController::class, 'confirmWithToken']);
 });

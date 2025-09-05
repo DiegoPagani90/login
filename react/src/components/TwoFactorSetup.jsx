@@ -1,30 +1,95 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import apiService from '../services/api';
 import './TwoFactorSetup.css';
 
 const TwoFactorSetup = ({ onComplete, onCancel }) => {
-  const [step, setStep] = useState(1); // 1: QR Code, 2: Verify Code
-  const [qrCodeData, setQrCodeData] = useState(null);
+  const [step, setStep] = useState(1); // 1: QR Code, 2: Verify Code, 3: Recovery
+  const [qrUrl, setQrUrl] = useState(null);
+  const [token, setToken] = useState(null);
+  const [expiresAt, setExpiresAt] = useState(null);
+  const [countdown, setCountdown] = useState(0);
   const [verificationCode, setVerificationCode] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const pollRef = useRef(null);
+  const timerRef = useRef(null);
+  const lastHiddenAtRef = useRef(null);
 
   useEffect(() => {
-    enableTwoFactor();
+    startSetup();
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
-  const enableTwoFactor = async () => {
-    console.log('[TwoFactorSetup] Enabling 2FA and generating QR code');
+  // Heuristic: if user switches away to scan and comes back quickly, auto-advance to verification
+  useEffect(() => {
+    if (!qrUrl || step !== 1) return;
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        lastHiddenAtRef.current = Date.now();
+      } else if (document.visibilityState === 'visible') {
+        if (lastHiddenAtRef.current && Date.now() - lastHiddenAtRef.current < 20000) {
+          setStep(2);
+        }
+        lastHiddenAtRef.current = null;
+      }
+    };
+
+    const onBlur = () => {
+      lastHiddenAtRef.current = Date.now();
+    };
+
+    const onFocus = () => {
+      if (lastHiddenAtRef.current && Date.now() - lastHiddenAtRef.current < 20000) {
+        setStep(2);
+      }
+      lastHiddenAtRef.current = null;
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [qrUrl, step]);
+
+  const startSetup = async () => {
+    console.log('[TwoFactorSetup] Starting 2FA setup session');
     setIsLoading(true);
-    
     try {
-      const response = await apiService.enableTwoFactor();
-      console.log('[TwoFactorSetup] 2FA enabled, QR code received');
-      setQrCodeData(response);
-      setRecoveryCodes(response.recovery_codes || []);
+      const start = await apiService.startTwoFactorSetup();
+      setToken(start.token);
+      setExpiresAt(start.expires_at);
+      timerRef.current = setInterval(() => {
+        const diff = Math.max(0, Math.floor((new Date(start.expires_at).getTime() - Date.now()) / 1000));
+        setCountdown(diff);
+        if (diff <= 0 && timerRef.current) clearInterval(timerRef.current);
+      }, 1000);
+      const qr = await apiService.getTwoFactorSetupQrByToken(start.token);
+      setQrUrl(qr.qr_code_url);
+      // Optionally preload recovery codes later after confirm
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await apiService.getTwoFactorSetupStatus(start.token);
+          if (status.status !== 'pending') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            if (status.status === 'expired') {
+              setError('QR code expired. Please restart the setup.');
+              setQrUrl(null);
+            }
+          }
+        } catch (e) {}
+      }, 3000);
     } catch (err) {
-      console.error('[TwoFactorSetup] Failed to enable 2FA:', err);
+      console.error('[TwoFactorSetup] Failed to start setup:', err);
       setError('Failed to enable two-factor authentication. Please try again.');
     } finally {
       setIsLoading(false);
@@ -39,9 +104,15 @@ const TwoFactorSetup = ({ onComplete, onCancel }) => {
     setIsLoading(true);
 
     try {
-      await apiService.confirmTwoFactor(verificationCode);
+      if (!token) throw new Error('Missing setup token');
+      await apiService.confirmTwoFactorWithToken(token, verificationCode);
       console.log('[TwoFactorSetup] 2FA setup confirmed successfully');
-      setStep(3); // Show recovery codes
+      // Fetch recovery codes freshly if needed
+      try {
+        const rec = await apiService.generateRecoveryCodes();
+        setRecoveryCodes(rec.recovery_codes || []);
+      } catch (e) {}
+      setStep(3);
     } catch (err) {
       console.error('[TwoFactorSetup] Failed to verify setup code:', err);
       setError(err.response?.data?.message || 'Invalid verification code');
@@ -63,7 +134,8 @@ const TwoFactorSetup = ({ onComplete, onCancel }) => {
 
   const handleCancel = async () => {
     console.log('[TwoFactorSetup] Setup cancelled, disabling 2FA');
-    
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
     try {
       await apiService.disableTwoFactor();
       console.log('[TwoFactorSetup] 2FA disabled successfully');
@@ -98,26 +170,26 @@ const TwoFactorSetup = ({ onComplete, onCancel }) => {
                 <div className="loading-spinner"></div>
                 <p>Generating QR code...</p>
               </div>
-            ) : qrCodeData ? (
+            ) : qrUrl ? (
               <div className="qr-container">
-                <img src={qrCodeData.qr_code_url} alt="2FA QR Code" className="qr-code" />
-                <p className="secret-text">
-                  Manual entry key: <code>{qrCodeData.secret}</code>
-                </p>
+                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}`} alt="2FA QR Code" className="qr-code" onClick={() => setStep(2)} />
+                {expiresAt && (
+                  <p className="expiry-text">Expires in: {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}</p>
+                )}
               </div>
             ) : (
               <div className="error-container">
                 <p>{error || 'Failed to generate QR code'}</p>
-                <button onClick={enableTwoFactor} className="retry-button">
+                <button onClick={startSetup} className="retry-button">
                   Try Again
                 </button>
               </div>
             )}
 
-            {qrCodeData && (
+            {qrUrl && (
               <div className="setup-actions">
                 <button onClick={() => setStep(2)} className="next-button">
-                  Next Step
+                  I scanned it - Next Step
                 </button>
               </div>
             )}

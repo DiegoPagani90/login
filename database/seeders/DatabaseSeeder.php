@@ -16,9 +16,21 @@ class DatabaseSeeder extends Seeder
         // User::factory(10)->create();
 
         User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
+            'name' => 'Diego',
+            'surname' => 'Pagani',
+            'email' => 'diego@example.com',
             'password' => bcrypt('password'), // password
+
+            // aggiunti
+            'date_of_birth' => '1990-20-09',
+            'gender' => 'male',
+            'phone_number' => '1234567890',
+            'place_of_birth' => 'Mariano Comense',
+            'address' => 'Via Giacomo Matteotti',
+            'civic_id' => '64',
+            'city' => 'Cabiate',
+            'state' => 'Italy',
+            'zip_code' => '22060',
         ]);
     }
 }
