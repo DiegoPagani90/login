@@ -4,20 +4,14 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 use Laravel\Fortify\Actions\ConfirmTwoFactorAuthentication;
 use Laravel\Fortify\Actions\DisableTwoFactorAuthentication;
 use Laravel\Fortify\Actions\EnableTwoFactorAuthentication;
 use Laravel\Fortify\Actions\GenerateNewRecoveryCodes;
+use Laravel\Fortify\TwoFactorAuthenticationProvider;
 use App\Models\User;
-use BaconQrCode\Renderer\Color\Rgb;
-use BaconQrCode\Renderer\Image\SvgImageRenderer;
-use BaconQrCode\Renderer\ImageRenderer;
-use BaconQrCode\Renderer\RendererStyle\Fill;
-use BaconQrCode\Renderer\RendererStyle\RendererStyle;
-use BaconQrCode\Writer;
 
 class TwoFactorAuthController extends Controller
 {
@@ -31,10 +25,30 @@ class TwoFactorAuthController extends Controller
         $enable = app(EnableTwoFactorAuthentication::class);
         $enable($user, true);
 
+        $secret = decrypt($user->two_factor_secret);
+        
+        \Log::info('[2FA] Enabled for user', [
+            'user_id' => $user->id,
+            'secret_length' => strlen($secret),
+            'app_name' => config('app.name')
+        ]);
+
+        // Generate QR code using Fortify's built-in method
+        $qrCodeUrl = app(TwoFactorAuthenticationProvider::class)->qrCodeUrl(
+            config('app.name'),
+            $user->email,
+            $secret
+        );
+
+        \Log::info('[2FA] QR code generated', [
+            'user_id' => $user->id,
+            'qr_url_length' => strlen($qrCodeUrl)
+        ]);
+
         return response()->json([
             'message' => 'Two factor authentication enabled',
-            'secret' => decrypt($user->two_factor_secret),
-            'qr_code_url' => $this->generateQrCodeUrl($user),
+            'secret' => $secret,
+            'qr_code_url' => $qrCodeUrl,
             'recovery_codes' => json_decode(decrypt($user->two_factor_recovery_codes), true)
         ], 200);
     }
@@ -79,7 +93,8 @@ class TwoFactorAuthController extends Controller
         return response()->json([
             'message' => 'Two factor authentication successful',
             'user' => $user,
-            'token' => $token
+            'token' => $token,
+            'two_factor_enabled' => !is_null($user->two_factor_secret)
         ], 200);
     }
 
@@ -96,8 +111,15 @@ class TwoFactorAuthController extends Controller
             ], 400);
         }
 
+        // Generate QR code using Fortify's built-in method
+        $qrCodeUrl = app(TwoFactorAuthenticationProvider::class)->qrCodeUrl(
+            config('app.name'),
+            $user->email,
+            decrypt($user->two_factor_secret)
+        );
+
         return response()->json([
-            'qr_code_url' => $this->generateQrCodeUrl($user),
+            'qr_code_url' => $qrCodeUrl,
             'secret' => decrypt($user->two_factor_secret),
             'recovery_codes' => $user->two_factor_recovery_codes ? 
                 json_decode(decrypt($user->two_factor_recovery_codes), true) : []
@@ -121,18 +143,18 @@ class TwoFactorAuthController extends Controller
             ], 400);
         }
 
-        if (!$this->verifyTwoFactorCode($user, $request->code)) {
+        try {
+            $confirm = app(ConfirmTwoFactorAuthentication::class);
+            $confirm($user, $request->code);
+
+            return response()->json([
+                'message' => 'Two factor authentication confirmed successfully'
+            ], 200);
+        } catch (\Exception $e) {
             throw ValidationException::withMessages([
                 'code' => ['The provided two factor authentication code is invalid.'],
             ]);
         }
-
-        $confirm = app(ConfirmTwoFactorAuthentication::class);
-        $confirm($user, $request->code);
-
-        return response()->json([
-            'message' => 'Two factor authentication confirmed successfully'
-        ], 200);
     }
 
     /**
@@ -158,35 +180,32 @@ class TwoFactorAuthController extends Controller
     }
 
     /**
-     * Generate QR code URL for Google Authenticator
-     */
-    private function generateQrCodeUrl($user): string
-    {
-        $qrCodeUrl = app(\Laravel\Fortify\TwoFactorAuthenticationProvider::class)->qrCodeUrl(
-            config('app.name'),
-            $user->email,
-            decrypt($user->two_factor_secret)
-        );
-
-        $svg = (new Writer(
-            new ImageRenderer(
-                new RendererStyle(400, 0, null, null, Fill::uniformColor(new Rgb(255, 255, 255), new Rgb(0, 0, 0))),
-                new SvgImageRenderer()
-            )
-        ))->writeString($qrCodeUrl);
-
-        return 'data:image/svg+xml;base64,' . base64_encode($svg);
-    }
-
-    /**
      * Verify two factor authentication code
      */
     private function verifyTwoFactorCode($user, $code): bool
     {
-        $twoFactorProvider = app(\Laravel\Fortify\TwoFactorAuthenticationProvider::class);
+        $twoFactorProvider = app(TwoFactorAuthenticationProvider::class);
+        $secret = decrypt($user->two_factor_secret);
         
-        return $twoFactorProvider->verify(decrypt($user->two_factor_secret), $code) ||
-               $this->verifyRecoveryCode($user, $code);
+        \Log::info('[2FA] Verifying code', [
+            'user_id' => $user->id,
+            'code_length' => strlen($code),
+            'secret_length' => strlen($secret),
+            'timestamp' => now()->timestamp
+        ]);
+        
+        $isValid = $twoFactorProvider->verify($secret, $code);
+        
+        if (!$isValid) {
+            $isValid = $this->verifyRecoveryCode($user, $code);
+        }
+        
+        \Log::info('[2FA] Verification result', [
+            'user_id' => $user->id,
+            'is_valid' => $isValid
+        ]);
+        
+        return $isValid;
     }
 
     /**

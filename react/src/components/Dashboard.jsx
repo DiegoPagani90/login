@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import apiService from '../services/api';
-import TwoFactorSetup from './TwoFactorSetup';
+import QrCodeModal from './QrCodeModal';
 import './Dashboard.css';
 
 const Dashboard = () => {
   const { user, logout, updateUser } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
-  const [showTwoFactorSetup, setShowTwoFactorSetup] = useState(false);
+  const [showQrCodeModal, setShowQrCodeModal] = useState(false);
   const [notification, setNotification] = useState(null);
 
   const showNotification = (message, type = 'success') => {
@@ -33,6 +33,7 @@ const Dashboard = () => {
 
   const handleToggleTwoFactor = async () => {
     console.log('[Dashboard] Toggling 2FA, current status:', user?.two_factor_enabled);
+    console.log('[Dashboard] Full user object:', user);
     
     if (user?.two_factor_enabled) {
       // Disable 2FA
@@ -49,22 +50,22 @@ const Dashboard = () => {
         setIsLoading(false);
       }
     } else {
-      // Enable 2FA - show setup modal
-      console.log('[Dashboard] Opening 2FA setup');
-      setShowTwoFactorSetup(true);
+      // Enable 2FA - show QR code modal
+      console.log('[Dashboard] Opening QR code modal for 2FA setup');
+      setShowQrCodeModal(true);
     }
   };
 
-  const handleTwoFactorSetupComplete = () => {
-    console.log('[Dashboard] 2FA setup completed');
-    setShowTwoFactorSetup(false);
+  const handleQrCodeModalComplete = () => {
+    console.log('[Dashboard] QR code setup completed');
+    setShowQrCodeModal(false);
     updateUser({ two_factor_enabled: true });
     showNotification('Two-factor authentication has been enabled successfully!');
   };
 
-  const handleTwoFactorSetupCancel = () => {
-    console.log('[Dashboard] 2FA setup cancelled');
-    setShowTwoFactorSetup(false);
+  const handleQrCodeModalCancel = () => {
+    console.log('[Dashboard] QR code setup cancelled');
+    setShowQrCodeModal(false);
   };
 
   if (!user) {
@@ -75,6 +76,9 @@ const Dashboard = () => {
       </div>
     );
   }
+
+  console.log('[Dashboard] Rendering with user:', user);
+  console.log('[Dashboard] 2FA Status:', user.two_factor_enabled);
 
   return (
     <div className="dashboard-container">
@@ -153,10 +157,10 @@ const Dashboard = () => {
         )}
       </div>
 
-      {showTwoFactorSetup && (
-        <TwoFactorSetup
-          onComplete={handleTwoFactorSetupComplete}
-          onCancel={handleTwoFactorSetupCancel}
+      {showQrCodeModal && (
+        <QrCodeModal
+          onComplete={handleQrCodeModalComplete}
+          onCancel={handleQrCodeModalCancel}
         />
       )}
     </div>

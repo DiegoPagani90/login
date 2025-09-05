@@ -79,8 +79,13 @@ export function AuthProvider({ children }) {
 
     try {
       const userData = await apiService.getUser();
-      console.log('[AuthContext] User authenticated successfully');
-      dispatch({ type: 'LOGIN_SUCCESS', payload: { user: userData.user } });
+      console.log('[AuthContext] User authenticated successfully', userData);
+      dispatch({ type: 'LOGIN_SUCCESS', payload: { 
+        user: {
+          ...userData.user,
+          two_factor_enabled: userData.two_factor_enabled
+        }
+      }});
     } catch (error) {
       console.error('[AuthContext] Authentication check failed');
       apiService.removeAuthToken();
@@ -105,7 +110,12 @@ export function AuthProvider({ children }) {
       } else {
         console.log('[AuthContext] Login completed successfully');
         apiService.setAuthToken(response.token);
-        dispatch({ type: 'LOGIN_SUCCESS', payload: { user: response.user } });
+        dispatch({ type: 'LOGIN_SUCCESS', payload: { 
+          user: {
+            ...response.user,
+            two_factor_enabled: response.two_factor_enabled || false
+          }
+        }});
         return { requiresTwoFactor: false };
       }
     } catch (error) {
@@ -124,7 +134,12 @@ export function AuthProvider({ children }) {
       console.log('[AuthContext] Two factor verification successful');
       
       apiService.setAuthToken(response.token);
-      dispatch({ type: 'LOGIN_SUCCESS', payload: { user: response.user } });
+      dispatch({ type: 'LOGIN_SUCCESS', payload: { 
+        user: {
+          ...response.user,
+          two_factor_enabled: response.two_factor_enabled || true // If they just verified 2FA, it must be enabled
+        }
+      }});
       return true;
     } catch (error) {
       console.error('[AuthContext] Two factor verification failed');

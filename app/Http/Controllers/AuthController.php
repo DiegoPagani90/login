@@ -45,7 +45,8 @@ class AuthController extends Controller
             'message' => 'Login successful',
             'user' => $user,
             'token' => $token,
-            'two_factor' => false
+            'two_factor' => false,
+            'two_factor_enabled' => !is_null($user->two_factor_secret)
         ], 200);
     }
 
